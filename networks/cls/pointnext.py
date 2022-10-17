@@ -1,20 +1,21 @@
 from typing import List, Type
 import logging
+import yaml
 import jittor as jt
 from jittor import nn
-from misc.layerutils import create_convblock1d, create_convblock2d, create_grouper, create_act
-from misc.ops import FurthestPointSampler, RandomSampler
-from misc.upsamping import three_interpolation
+from misc.layerutils import create_convblock1d, create_convblock2d, create_grouper, create_act, CHANNEL_MAP
+from misc.sampler import FurthestPointSampler, RandomSampler
+from misc.upsampling import three_interpolation
 
 def get_reduction_fn(reduction):
     reduction = 'mean' if reduction.lower() == 'avg' else reduction
     assert reduction in ['sum', 'max', 'mean']
     if reduction == 'max':
-        pool = lambda x: jt.max(x, dim=-1, keepdim=False)[0]
+        pool = lambda x: jt.max(x, dim=-1, keepdims=False)[0]
     elif reduction == 'mean':
-        pool = lambda x: jt.mean(x, dim=-1, keepdim=False)
+        pool = lambda x: jt.mean(x, dim=-1, keepdims=False)
     elif reduction == 'sum':
-        pool = lambda x: jt.sum(x, dim=-1, keepdim=False)
+        pool = lambda x: jt.sum(x, dim=-1, keepdims=False)
     return pool
 
 
@@ -137,10 +138,10 @@ class SetAbstraction(nn.Module):
         self.convs = nn.Sequential(*convs)
         if not is_head:
             if self.all_aggr:
-                group_args.nsample = None
-                group_args.radius = None
+                group_args["nsample"] = None
+                group_args["radius"] = None
             self.grouper = create_grouper(group_args)
-            self.pool = lambda x: jt.max(x, dim=-1, keepdim=False)[0]
+            self.pool = lambda x: jt.max(x, dim=-1, keepdims=False)
             if sampler.lower() == 'fps':
                 self.sample_fn = FurthestPointSampler()
             elif sampler.lower() == 'random':
@@ -152,8 +153,8 @@ class SetAbstraction(nn.Module):
             f = self.convs(f)  # (n, c)
         else:
             if not self.all_aggr:
-                idx = self.sample_fn(p, p.shape[1] // self.stride) #.long()
-                new_p = jt.gather(p, 1, idx.unsqueeze(-1).expand(-1, -1, 3))
+                new_p, idx = self.sample_fn(p, p.shape[1] // self.stride) #.long()
+                jt.sync_all()
             else:
                 new_p = p
             """ DEBUG neighbor numbers. 
@@ -198,7 +199,7 @@ class FeaturePropogation(nn.Module):
         super().__init__()
         if not upsample:
             self.linear2 = nn.Sequential(
-                nn.Linear(mlp[0], mlp[1]), nn.ReLU(inplace=True))
+                nn.Linear(mlp[0], mlp[1]), nn.ReLU())
             mlp[1] *= 2
             linear1 = []
             for i in range(1, len(mlp) - 1):
@@ -214,11 +215,13 @@ class FeaturePropogation(nn.Module):
                                                 ))
             self.convs = nn.Sequential(*convs)
 
-        self.pool = lambda x: jt.mean(x, dim=-1, keepdim=False)
+        self.pool = lambda x: jt.mean(x, dim=-1, keepdims=False)
 
     def execute(self, pf1, pf2=None):
         # pfb1 is with the same size of upsampled points
+        print("???@")
         if pf2 is None:
+            print("????")
             _, f = pf1  # (B, N, 3), (B, C, N)
             f_global = self.pool(f)
             f = jt.concat(
@@ -268,8 +271,7 @@ class InvResMLP(nn.Module):
             pwconv.append(create_convblock1d(channels[i], channels[i + 1],
                                              norm_args=norm_args,
                                              act_args=act_args if
-                                             (i != len(channels) - 2) and not less_act else None,
-                                             **conv_args)
+                                             (i != len(channels) - 2) and not less_act else None, **conv_args)
                           )
         self.pwconv = nn.Sequential(*pwconv)
         self.act = create_act(act_args)
@@ -315,8 +317,6 @@ class ResBlock(nn.Module):
         f = self.act(f)
         return [p, f]
 
-
-@MODELS.register_module()
 class PointNextEncoder(nn.Module):
     r"""The Encoder for PointNext 
     `"PointNeXt: Revisiting PointNet++ with Improved Training and Scaling Strategies".
@@ -385,8 +385,8 @@ class PointNextEncoder(nn.Module):
             channels.append(width)
         encoder = []
         for i in range(len(blocks)):
-            group_args.radius = self.radii[i]
-            group_args.nsample = self.nsample[i]
+            group_args["radius"] = self.radii[i]
+            group_args["nsample"] = self.nsample[i]
             encoder.append(self._make_enc(
                 block, channels[i], blocks[i], stride=strides[i], group_args=group_args,
                 is_head=i == 0 and strides[i] == 1
@@ -417,10 +417,10 @@ class PointNextEncoder(nn.Module):
 
     def _make_enc(self, block, channels, blocks, stride, group_args, is_head=False):
         layers = []
-        radii = group_args.radius
-        nsample = group_args.nsample
-        group_args.radius = radii[0]
-        group_args.nsample = nsample[0]
+        radii = group_args["radius"]
+        nsample = group_args["nsample"]
+        group_args["radius"] = radii[0]
+        group_args["nsample"] = nsample[0]
         layers.append(SetAbstraction(self.in_channels, channels,
                                      self.sa_layers if not is_head else 1, stride,
                                      group_args=group_args,
@@ -430,8 +430,8 @@ class PointNextEncoder(nn.Module):
                                      ))
         self.in_channels = channels
         for i in range(1, blocks):
-            group_args.radius = radii[i]
-            group_args.nsample = nsample[i]
+            group_args["radius"] = radii[i]
+            group_args["nsample"] = nsample[i]
             layers.append(block(self.in_channels,
                                 aggr_args=self.aggr_args,
                                 norm_args=self.norm_args, act_args=self.act_args, group_args=group_args,
@@ -459,6 +459,7 @@ class PointNextEncoder(nn.Module):
             _p, _f = self.encoder[i]([p[-1], f[-1]])
             p.append(_p)
             f.append(_f)
+            jt.sync_all()
         return p, f
 
     def execute(self, p0, f0=None):
@@ -498,7 +499,9 @@ class PointNextDecoder(nn.Module):
 
     def execute(self, p, f):
         for i in range(-1, -len(self.decoder) - 1, -1):
-            f[i - 1] = self.decoder[i][1:](
+            print(len(self.decoder))
+            decoder_sequece = nn.Sequential([self.decoder[i][k] for k in range(1, len(self.decoder[i]))])
+            f[i - 1] = decoder_sequece(
                 [p[i], self.decoder[i][0]([p[i - 1], f[i - 1]], [p[i], f[i]])])[1]
         return f[-len(self.decoder) - 1]
 
@@ -564,8 +567,8 @@ class PointNextPartDecoder(nn.Module):
         n_decoder_stages = len(fp_channels)
         decoder = [[] for _ in range(n_decoder_stages)]
         for i in range(-1, -n_decoder_stages - 1, -1):
-            group_args.radius = self.radii[i]
-            group_args.nsample = self.nsample[i]
+            group_args["radius"] = self.radii[i]
+            group_args["nsample"] = self.nsample[i]
             decoder[i] = self._make_dec(
                 skip_channels[i], fp_channels[i], group_args=group_args, block=block, blocks=self.blocks[i])
 
@@ -574,15 +577,15 @@ class PointNextPartDecoder(nn.Module):
 
     def _make_dec(self, skip_channels, fp_channels, group_args=None, block=None, blocks=1):
         layers = []
-        radii = group_args.radius
-        nsample = group_args.nsample
+        radii = group_args["radius"]
+        nsample = group_args["nsample"]
         mlp = [skip_channels + self.in_channels] + \
               [fp_channels] * self.decoder_layers
         layers.append(FeaturePropogation(mlp, act_args=self.act_args))
         self.in_channels = fp_channels
         for i in range(1, blocks):
-            group_args.radius = radii[i]
-            group_args.nsample = nsample[i]
+            group_args["radius"] = radii[i]
+            group_args["nsample"] = nsample[i]
             layers.append(block(self.in_channels,
                                 aggr_args=self.aggr_args,
                                 norm_args=self.norm_args, act_args=self.act_args, group_args=group_args,
@@ -613,24 +616,11 @@ class PointNextPartDecoder(nn.Module):
 
     def execute(self, p, f, cls_label):
         B, N = p[0].shape[0:2]
-        if self.cls_map == 'curvenet':
+        if self.cls_map == 'pointnext':
             emb1 = self.global_conv1(f[-2])
-            emb1 = emb1.max(dim=-1, keepdim=True)[0]  # bs, 64, 1
+            emb1 = emb1.max(dim=-1, keepdims=True)[0]  # bs, 64, 1
             emb2 = self.global_conv2(f[-1])
-            emb2 = emb2.max(dim=-1, keepdim=True)[0]  # bs, 128, 1
-            cls_one_hot = jt.zeros((B, self.num_classes), device=p[0].device)
-            cls_one_hot = cls_one_hot.scatter_(1, cls_label, 1).unsqueeze(-1)
-            cls_one_hot = jt.concat((emb1, emb2, cls_one_hot), dim=1)
-            cls_one_hot = cls_one_hot.expand(-1, -1, N)
-        elif self.cls_map == 'pointnet2':
-            cls_one_hot = jt.zeros((B, self.num_classes), device=p[0].device)
-            cls_one_hot = cls_one_hot.scatter_(1, cls_label, 1).unsqueeze(-1).repeat(1, 1, N)
-            cls_one_hot = self.convc(cls_one_hot)
-        elif self.cls_map == 'pointnext':
-            emb1 = self.global_conv1(f[-2])
-            emb1 = emb1.max(dim=-1, keepdim=True)[0]  # bs, 64, 1
-            emb2 = self.global_conv2(f[-1])
-            emb2 = emb2.max(dim=-1, keepdim=True)[0]  # bs, 128, 1
+            emb2 = emb2.max(dim=-1, keepdims=True)[0]  # bs, 128, 1
             self.cls2partembed = self.cls2partembed.to(p[0].device)
             cls_one_hot = self.cls2partembed[cls_label.squeeze()].unsqueeze(-1)
             cls_one_hot = jt.concat((emb1, emb2, cls_one_hot), dim=1)
@@ -651,4 +641,13 @@ class PointNextPartDecoder(nn.Module):
         return f[-len(self.decoder) - 1]
 
 if __name__ == "__main__":
-    pass
+    import numpy as np
+    f = open("pointnext-s.yaml")
+    kw = yaml.safe_load(f)['model']['encoder_args']
+    encoder = PointNextEncoder(**kw)
+    decoder = PointNextDecoder(encoder.channel_list)
+    points = jt.array(np.random.uniform(0, 1, (12, 4096, 3)))
+    p, f = encoder(points)
+    for i in range(len(p)):
+        print(p[i].shape, f[i].shape)
+    print(decoder(p, f))

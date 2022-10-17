@@ -1,11 +1,29 @@
+import logging
 import jittor as jt
 from jittor import nn
 import copy
 from easydict import EasyDict as edict
-from ops import *
+from misc.ops import *
+from misc.grouper import QueryAndGroup, GroupAll_Trans
 
 # Borrow from OpenPoint: https://github.com/guochengqian/openpoints.git
-CHANNEL_MAP = {}
+CHANNEL_MAP = {
+    'fj': lambda x: x,
+    'df': lambda x: x,
+    'assa': lambda x: x * 3,
+    'assa_dp': lambda x: x * 3 + 3,
+    'dp_fj': lambda x: 3 + x,
+    'pj': lambda x: x,
+    'dp': lambda x: 3,
+    'pi_dp': lambda x: x + 3,
+    'pj_dp': lambda x: x + 3,
+    'dp_fj_df': lambda x: x*2 + 3,
+    'dp_fi_df': lambda x: x*2 + 3,
+    'pi_dp_fj_df': lambda x: x*2 + 6,
+    'pj_dp_fj_df': lambda x: x*2 + 6,
+    'pj_dp_df': lambda x: x + 6,
+    'dp_df': lambda x: x + 3,
+}
 
 # TODO: support in jittor
 # hard_sigmoid=nn.Hardsigmoid,
@@ -50,7 +68,6 @@ def create_act(act_args):
         act_layer = _ACT_LAYER[act]
 
     inplace = act_args.pop('inplace', True)
-
     if act not in ['gelu', 'sigmoid']: # TODO: add others
         return act_layer(**act_args)
     else:
@@ -172,7 +189,6 @@ def create_convblock2d(*args,
         act_layer = create_act(act_args)
         if act_args is not None:
             conv_layer.append(act_layer)
-
     elif order == 'norm-act-conv':
         conv_layer = []
         norm_layer = create_norm(norm_args, in_channels, dimension='2d')
@@ -248,14 +264,11 @@ def create_grouper(group_args):
     logging.info(group_args)
     if nsample is not None:
         if method == 'ballquery':
-            grouper = BallQueryGrouper(radius, nsample, **group_args_copy)
+            grouper = QueryAndGroup(radius, nsample, **group_args_copy)
             # grouper = QueryAndGroup(radius, nsample, **group_args_copy)
         elif method == 'knn':
             grouper = knn(nsample,  **group_args_copy)
             grouper = KNNGroup(nsample,  **group_args_copy)
     else:
-        grouper = GroupAll(use_xyz=False)
+        grouper = GroupAll_Trans(use_xyz=False)
     return grouper
-
-def create_act(act_args):
-    pass

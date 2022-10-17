@@ -161,7 +161,7 @@ class BallQueryGrouper(nn.Module):
             in0_p, in1_p, out0_p, out1_p
         );
     '''
-    def __init__(self, radius, n_samples, use_xyz):
+    def __init__(self, radius, n_samples, use_xyz=False):
         super().__init__()
         self.radius = radius
         self.n_samples = n_samples
@@ -178,6 +178,7 @@ class BallQueryGrouper(nn.Module):
         -------
         new_feature: jt.Var, (B, N, n_samples, C)
         '''
+        print(pointset.shape, feature.shape)
         batch_size_x, n_input, n_coords = new_xyz.shape
         assert n_coords == 3
 
@@ -225,11 +226,11 @@ class BallQueryGrouper(nn.Module):
         if self.use_xyz:
             local_xyz = new_pointset - new_xyz.unsqueeze(dim=2)
             if new_feature is not None:
-                new_feature = jt.contrib.concat([local_xyz, new_feature], dim=-1)
+                new_feature = jt.concat([local_xyz, new_feature], dim=-1)
             else:
                 new_feature = local_xyz
 
-        return new_feature
+        return new_feature, idxs
 
 
 class GroupAll(nn.Module):
@@ -240,6 +241,8 @@ class GroupAll(nn.Module):
     def execute(self, new_xyz, pointset, feature):
         if self.use_xyz:
             new_feature = jt.contrib.concat([pointset, feature], dim=-1)
+        else:
+            new_feature = feature
         new_feature = new_feature.unsqueeze(dim=1) # [B, 1, N, C]
         return new_feature
 
