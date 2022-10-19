@@ -272,3 +272,64 @@ def create_grouper(group_args):
     else:
         grouper = GroupAll_Trans(use_xyz=False)
     return grouper
+
+# TODO: remove create_norm1d
+def create_norm1d(norm_args, channels):
+    """Build normalization layer.
+    Returns:
+        nn.Module: Created normalization layer.
+    """
+    norm_args_copy = edict(copy.deepcopy(norm_args))
+
+    if norm_args_copy is None or not norm_args_copy:  # Empty or None
+        return None
+
+    norm = norm_args_copy.get('norm', None)
+    if norm is None:
+        return None
+
+    if '1d' not in norm and norm != 'ln':
+        norm_args_copy.norm += '1d'
+    return create_norm(norm_args_copy, channels)
+
+def create_linearblock(*args,
+                       norm_args=None,
+                       act_args=None,
+                       order='conv-norm-act',
+                       **kwargs):
+    in_channels = args[0]
+    out_channels = args[1]
+    bias = kwargs.pop('bias', True)
+
+    if order == 'conv-norm-act':
+        norm_layer = create_norm(norm_args, out_channels, dimension='1d')
+        bias = False if norm_layer is not None else bias
+        linear_layer = [nn.Linear(*args, bias, **kwargs)]
+        if norm_layer is not None:
+            linear_layer.append(norm_layer)
+        act_layer = create_act(act_args)
+        if act_args is not None:
+            linear_layer.append(act_layer)
+    elif order == 'norm-act-conv':
+        linear_layer = []
+        norm_layer = create_norm(norm_args, in_channels, dimension='1d')
+        bias = kwargs.pop('bias', True)
+        bias = False if norm_layer is not None else bias
+        if norm_layer is not None:
+            linear_layer.append(norm_layer)
+        act_layer = create_act(act_args)
+        if act_args is not None:
+            linear_layer.append(act_layer)
+        linear_layer.append(nn.Linear(*args, bias=bias, **kwargs))
+
+    elif order == 'conv-act-norm':
+        norm_layer = create_norm(norm_args, out_channels, dimension='1d')
+        bias = False if norm_layer is not None else bias
+        linear_layer = [nn.Linear(*args, bias=bias, **kwargs)]
+        act_layer = create_act(act_args)
+        if act_args is not None:
+            linear_layer.append(act_layer)
+        if norm_layer is not None:
+            linear_layer.append(norm_layer)
+
+    return nn.Sequential(*linear_layer)

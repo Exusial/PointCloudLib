@@ -4,7 +4,7 @@ import jittor as jt
 import jittor.nn as nn
 from jittor import init
 
-from misc.ops import FurthestPointSampler
+from misc.sampler import FurthestPointSampler
 from misc.ops import BallQueryGrouper
 from misc.ops import GroupAll
 
