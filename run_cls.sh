@@ -1,4 +1,4 @@
-CUDA_VISIBLE_DEVICES='2' python train_cls.py \
+CUDA_VISIBLE_DEVICES='2' PYTHONPATH=/home/penghy/jittor-dev/jittor/python:/home/penghy/PointCloudLib python train_cls.py \
 --model pointnext \
 --data_dir /home/penghy/PointNeXt/data/ModelNet40Ply2048/ \
 --mode train \

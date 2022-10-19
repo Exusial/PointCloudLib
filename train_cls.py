@@ -1,7 +1,7 @@
 import numpy as np
 from tqdm import tqdm
 import jittor as jt
-from jittor import nn
+from jittor import nn, optim
 
 jt.flags.use_cuda = 1
 
@@ -111,6 +111,7 @@ if __name__ == '__main__':
     parser.add_argument('--model', type=str, default='[pointnet]', metavar='N',
                         choices=['pointnet', 'pointnet2', 'pointcnn', 'dgcnn', 'pointconv', 'pointnext'],
                         help='Model to use')
+    parser.add_argument('--optimizer', type=str, default='adam')
     parser.add_argument('--batch_size', type=int, default=32, metavar='batch_size',
                         help='Size of batch)')
     parser.add_argument('--lr', type=float, default=0.02, metavar='LR',
@@ -131,6 +132,8 @@ if __name__ == '__main__':
                         choices=['ModelNet40', 'ModelNet40-h5'])
     parser.add_argument('--data_dir', type=str, default=None,
                         help='path to the data dir')
+    parser.add_argument('--weight_decay', type=float, default=0.05,
+                        help='l2 norm to the loss')
     args = parser.parse_args()
 
 
@@ -158,8 +161,12 @@ if __name__ == '__main__':
         raise Exception("Not implemented")
 
     base_lr = args.lr
-    optimizer = nn.SGD(net.parameters(), lr = base_lr, momentum = args.momentum)
-
+    if args.optimizer == "sgd":
+        optimizer = nn.SGD(net.parameters(), lr = base_lr, momentum = args.momentum)
+    elif args.optimizer == "adam":
+        optimizer = optim.Adam(net.parameters(), lr=base_lr, weight_decay=0.05)
+    elif args.optimizer == "adamw":
+        optimizer = optim.AdamW(net.parameters(), lr=base_lr, weight_decay=0.05)
     lr_scheduler = LRScheduler(optimizer, base_lr)
 
     batch_size = args.batch_size
@@ -172,7 +179,6 @@ if __name__ == '__main__':
         val_dataloader = ModelNet40_h5(n_points=n_points, data_dir=args.data_dir, batch_size=batch_size, train=False, shuffle=False)
     step = 0
     best_acc = 0
-    state_dict = jt.load(args.pretrained_path)
     # for k,v in state_dict.items():
     #     print(k, v.shape)
     if args.pretrained_path:
