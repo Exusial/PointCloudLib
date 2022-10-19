@@ -4,7 +4,8 @@ from jittor import nn
 from jittor.contrib import concat 
 import math 
 from typing import Tuple, Callable, Optional, Union
-from misc.ops import FurthestPointSampler, KNN
+from misc.ops import KNN
+from misc.sampler import FurthestPointSampler
 import time 
 
 

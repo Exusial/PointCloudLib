@@ -3,7 +3,7 @@ import logging
 import yaml
 import jittor as jt
 from jittor import nn
-from misc.layerutils import create_convblock1d, create_convblock2d, create_grouper, create_act, CHANNEL_MAP
+from misc.layerutils import create_convblock1d, create_convblock2d, create_grouper, create_act, CHANNEL_MAP, create_norm1d, create_linearblock
 from misc.sampler import FurthestPointSampler, RandomSampler
 from misc.upsampling import three_interpolation
 
@@ -219,9 +219,7 @@ class FeaturePropogation(nn.Module):
 
     def execute(self, pf1, pf2=None):
         # pfb1 is with the same size of upsampled points
-        print("???@")
         if pf2 is None:
-            print("????")
             _, f = pf1  # (B, N, 3), (B, C, N)
             f_global = self.pool(f)
             f = jt.concat(
@@ -499,7 +497,6 @@ class PointNextDecoder(nn.Module):
 
     def execute(self, p, f):
         for i in range(-1, -len(self.decoder) - 1, -1):
-            print(len(self.decoder))
             decoder_sequece = nn.Sequential([self.decoder[i][k] for k in range(1, len(self.decoder[i]))])
             f[i - 1] = decoder_sequece(
                 [p[i], self.decoder[i][0]([p[i - 1], f[i - 1]], [p[i], f[i]])])[1]
@@ -640,14 +637,83 @@ class PointNextPartDecoder(nn.Module):
 
         return f[-len(self.decoder) - 1]
 
+class PointNextCls(nn.Module):
+    def __init__(self,
+                 encoder=None,
+                 cls_args=None,
+                 **kwargs):
+        super().__init__()
+        self.encoder = encoder
+
+        if cls_args is not None:
+            in_channels = self.encoder.out_channels if hasattr(self.encoder, 'out_channels') else cls_args.get('in_channels', None)
+            cls_args['in_channels'] = in_channels
+            self.prediction = ClsHead(**cls_args)
+        else:
+            self.prediction = nn.Identity()
+
+    def execute(self, data):
+        global_feat = self.encoder.execute_cls_feat(data)
+        return self.prediction(global_feat)
+
+class ClsHead(nn.Module):
+    def __init__(self,
+                 num_classes: int,
+                 in_channels: int,
+                 mlps: List[int]=[256],
+                 norm_args: dict=None,
+                 act_args: dict={'act': 'relu'},
+                 dropout: float=0.5,
+                 global_feat: str=None,
+                 point_dim: int=2,
+                 **kwargs
+                 ):
+        super().__init__()
+        if kwargs:
+            logging.warning(f"kwargs: {kwargs} are not used in {__class__.__name__}")
+        self.global_feat = global_feat.split(',') if global_feat is not None else None
+        self.point_dim = point_dim
+        in_channels = len(self.global_feat) * in_channels if global_feat is not None else in_channels
+        if mlps is not None:
+            mlps = [in_channels] + mlps + [num_classes]
+        else:
+            mlps = [in_channels, num_classes]
+
+        heads = []
+        for i in range(len(mlps) - 2):
+            heads.append(create_linearblock(mlps[i], mlps[i + 1],
+                                            norm_args=norm_args,
+                                            act_args=act_args))
+            if dropout:
+                heads.append(nn.Dropout(dropout))
+        heads.append(create_linearblock(mlps[-2], mlps[-1], act_args=None))
+        self.head = nn.Sequential(*heads)
+
+
+    def execute(self, end_points):
+        if self.global_feat is not None:
+            global_feats = []
+            for preprocess in self.global_feat:
+                if 'max' in preprocess:
+                    global_feats.append(jt.max(end_points, dim=self.point_dim, keepdims=False))
+                elif preprocess in ['avg', 'mean']:
+                    global_feats.append(jt.mean(end_points, dim=self.point_dim, keepdims=False))
+            end_points = jt.concat(global_feats, dim=1)
+        logits = self.head(end_points)
+        return logits
+
 if __name__ == "__main__":
     import numpy as np
+    jt.flags.use_cuda = 1
     f = open("pointnext-s.yaml")
     kw = yaml.safe_load(f)['model']['encoder_args']
     encoder = PointNextEncoder(**kw)
     decoder = PointNextDecoder(encoder.channel_list)
-    points = jt.array(np.random.uniform(0, 1, (12, 4096, 3)))
+    encoder.load("encoder.pth")
+    decoder.load("decoder.pth")
+    points = jt.array(np.load("points.pkl"))
     p, f = encoder(points)
-    for i in range(len(p)):
-        print(p[i].shape, f[i].shape)
-    print(decoder(p, f))
+    print(p[-1], f[-1])
+    # for i in range(len(p)):
+    #     print(p[i].shape, f[i].shape)
+    print(decoder(p, f).shape)

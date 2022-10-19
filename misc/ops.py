@@ -178,7 +178,6 @@ class BallQueryGrouper(nn.Module):
         -------
         new_feature: jt.Var, (B, N, n_samples, C)
         '''
-        print(pointset.shape, feature.shape)
         batch_size_x, n_input, n_coords = new_xyz.shape
         assert n_coords == 3
 

@@ -2,7 +2,6 @@ import numpy as np
 from tqdm import tqdm
 import jittor as jt
 from jittor import nn
-from jittor.contrib import concat 
 
 jt.flags.use_cuda = 1
 
@@ -11,10 +10,12 @@ from networks.cls.pointnet import PointNet as  PointNet_cls
 from networks.cls.dgcnn import DGCNN
 from networks.cls.pointcnn import PointCNNcls
 from networks.cls.pointconv import PointConvDensityClsSsg
+from networks.cls.pointnext import PointNextEncoder, PointNextCls
 
 import math 
-
+import yaml
 from data_utils.modelnet40_loader import ModelNet40
+from data_utils.modelnet40_ply_loader import ModelNet40_h5
 from misc.utils import LRScheduler
 import argparse
 
@@ -91,7 +92,7 @@ def evaluate(net, epoch, dataloader, args):
         # output = net(pts, feature)
         if args.model == 'pointnet2':
             output = net(pts, normals)
-        else :
+        else:
             output = net(pts)
         # output = net()
         pred = np.argmax(output.data, axis=1)
@@ -105,9 +106,10 @@ def evaluate(net, epoch, dataloader, args):
 
 if __name__ == '__main__':
     freeze_random_seed()
+    # TODO: use registry way to move if-else clause in choosing model and dataset
     parser = argparse.ArgumentParser(description='Point Cloud Recognition')
     parser.add_argument('--model', type=str, default='[pointnet]', metavar='N',
-                        choices=['pointnet', 'pointnet2', 'pointcnn', 'dgcnn', 'pointconv'],
+                        choices=['pointnet', 'pointnet2', 'pointcnn', 'dgcnn', 'pointconv', 'pointnext'],
                         help='Model to use')
     parser.add_argument('--batch_size', type=int, default=32, metavar='batch_size',
                         help='Size of batch)')
@@ -119,7 +121,16 @@ if __name__ == '__main__':
                         help='num of points to use')
     parser.add_argument('--epochs', type=int, default=300, metavar='N',
                         help='number of episode to train ')
-
+    parser.add_argument('--configs', type=str, default=None,
+                        help='config files to models')
+    parser.add_argument('--mode', type=str, default='train',
+                        help='mode of running models')
+    parser.add_argument('--pretrained_path', type=str, default=None,
+                        help='path to the pretrained parameters of models')
+    parser.add_argument('--dataset_type', type=str, default='ModelNet40',
+                        choices=['ModelNet40', 'ModelNet40-h5'])
+    parser.add_argument('--data_dir', type=str, default=None,
+                        help='path to the data dir')
     args = parser.parse_args()
 
 
@@ -133,6 +144,16 @@ if __name__ == '__main__':
         net = DGCNN()
     elif args.model == 'pointconv':
         net = PointConvDensityClsSsg()
+    elif args.model == 'pointnext':
+        kw = {}
+        pre_kw = {}
+        if args.configs:
+            f = open(args.configs)
+            config_file = yaml.safe_load(f)
+            kw = config_file['model']['encoder_args']
+            pre_kw = config_file['model']['cls_args']
+        encoder = PointNextEncoder(**kw)
+        net = PointNextCls(encoder, cls_args=pre_kw)
     else:
         raise Exception("Not implemented")
 
@@ -143,16 +164,28 @@ if __name__ == '__main__':
 
     batch_size = args.batch_size
     n_points = args.num_points
-    train_dataloader = ModelNet40(n_points=n_points, batch_size=batch_size, train=True, shuffle=True)
-    val_dataloader = ModelNet40(n_points=n_points, batch_size=batch_size, train=False, shuffle=False)
-
+    if args.dataset_type=='ModelNet40':
+        train_dataloader = ModelNet40(n_points=n_points, batch_size=batch_size, train=True, shuffle=True)
+        val_dataloader = ModelNet40(n_points=n_points, batch_size=batch_size, train=False, shuffle=False)
+    else:
+        train_dataloader = ModelNet40_h5(n_points=n_points, data_dir=args.data_dir, batch_size=batch_size, train=True, shuffle=True)
+        val_dataloader = ModelNet40_h5(n_points=n_points, data_dir=args.data_dir, batch_size=batch_size, train=False, shuffle=False)
     step = 0
     best_acc = 0
-    for epoch in range(args.epochs):
-        lr_scheduler.step(len(train_dataloader) * batch_size)
+    state_dict = jt.load(args.pretrained_path)
+    # for k,v in state_dict.items():
+    #     print(k, v.shape)
+    if args.pretrained_path:
+        net.load(args.pretrained_path)
+    if args.mode == "train":
+        for epoch in range(args.epochs):
+            lr_scheduler.step(len(train_dataloader) * batch_size)
 
-        train(net, optimizer, epoch, train_dataloader, args)
-        acc = evaluate(net, epoch, val_dataloader, args)
+            train(net, optimizer, epoch, train_dataloader, args)
+            acc = evaluate(net, epoch, val_dataloader, args)
 
-        best_acc = max(best_acc, acc)
-        print(f'val acc={acc:.4f}, best={best_acc:.4f}')
+            best_acc = max(best_acc, acc)
+            print(f'val acc={acc:.4f}, best={best_acc:.4f}')
+    elif args.mode == "test":
+        acc = evaluate(net, 0, val_dataloader, args)
+        print(f'val acc={acc:.4f}')
