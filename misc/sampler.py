@@ -192,6 +192,6 @@ class RandomSampler(nn.Module):
         if not n_samples:
             n_samples = self.n_samples
         B, N, _ = p.shape
-        idx = jt.randint(0, B, shape=(N, n_samples, ))
+        idx = jt.randint(0, N, shape=(B, n_samples, ))
         y = p.reindex([B, n_samples, 3], ['i0', '@e0(i0,i1)', 'i2'], extras=[idx])
         return y, idx

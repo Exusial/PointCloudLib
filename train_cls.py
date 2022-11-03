@@ -18,13 +18,12 @@ from data_utils.modelnet40_loader import ModelNet40
 from data_utils.modelnet40_ply_loader import ModelNet40_h5
 from misc.utils import LRScheduler
 import argparse
-
-
 import time 
+
 
 def freeze_random_seed():
     np.random.seed(0)
-
+    jt.set_global_seed(0)
 
 def soft_cross_entropy_loss(output, target, smoothing=True):
     ''' Calculate cross entropy loss, apply label smoothing if needed. '''
@@ -34,13 +33,11 @@ def soft_cross_entropy_loss(output, target, smoothing=True):
     if smoothing:
         eps = 0.2
         b, n_class = output.shape
-
         one_hot = jt.zeros(output.shape)
-        for i in range (b):
+        for i in range(b):
             one_hot[i, target[i].data] = 1
 
         one_hot = one_hot * (1 - eps) + (1 - one_hot) * eps / (n_class - 1)
-        # print (one_hot[0].data)
         log_prb = jt.log(softmax(output))
         loss = -(one_hot * log_prb).sum(dim=1).mean()
     else:
@@ -53,21 +50,20 @@ def train(net, optimizer, epoch, dataloader, args):
     net.train()
 
     pbar = tqdm(dataloader, desc=f'Epoch {epoch} [TRAIN]')
+    iter = 0
     for pts, normals, labels in pbar:
-        
-        # #output = net(pts, normals) 
-        
-        
         if args.model == 'pointnet' or args.model == 'dgcnn' :
             pts = pts.transpose(0, 2, 1)
-
         if args.model == 'pointnet2':
             output = net(pts, normals)
         else :
             output = net(pts)
-
-        # loss = nn.cross_entropy_loss(output, labels)
         loss = soft_cross_entropy_loss(output, labels)
+        # pass 1: norm loss
+        # optimizer.backward(loss)
+        # optimizer.clip_grad_norm(1.)
+        # optimizer.step()
+        # pass 2: no norm
         optimizer.step(loss) 
         pred = np.argmax(output.data, axis=1)
         acc = np.mean(pred == labels.data) * 100
@@ -80,21 +76,14 @@ def evaluate(net, epoch, dataloader, args):
     net.eval()
     total_time = 0.0
     for pts, normals, labels in tqdm(dataloader, desc=f'Epoch {epoch} [Val]'):
-        # pts = jt.float32(pts.numpy())
-        # normals = jt.float32(normals.numpy())
-        # labels = jt.int32(labels.numpy())
-        # feature = concat((pts, normals), 2)
         if args.model == 'pointnet' or args.model == 'dgcnn' :
             pts = pts.transpose(0, 2, 1)
 
         # pts = pts.transpose(0, 2, 1) # for pointnet DGCNN
-
-        # output = net(pts, feature)
         if args.model == 'pointnet2':
             output = net(pts, normals)
         else:
             output = net(pts)
-        # output = net()
         pred = np.argmax(output.data, axis=1)
         acc = np.sum(pred == labels.data)
         total_acc += acc
@@ -102,7 +91,6 @@ def evaluate(net, epoch, dataloader, args):
     acc = 0.0
     acc = total_acc / total_num
     return acc
-
 
 if __name__ == '__main__':
     freeze_random_seed()
@@ -164,9 +152,9 @@ if __name__ == '__main__':
     if args.optimizer == "sgd":
         optimizer = nn.SGD(net.parameters(), lr = base_lr, momentum = args.momentum)
     elif args.optimizer == "adam":
-        optimizer = optim.Adam(net.parameters(), lr=base_lr, weight_decay=0.05)
+        optimizer = optim.Adam(net.parameters(), lr=base_lr, weight_decay=args.weight_decay)
     elif args.optimizer == "adamw":
-        optimizer = optim.AdamW(net.parameters(), lr=base_lr, weight_decay=0.05)
+        optimizer = optim.AdamW(net.parameters(), lr=base_lr, weight_decay=args.weight_decay)
     lr_scheduler = LRScheduler(optimizer, base_lr)
 
     batch_size = args.batch_size
@@ -179,17 +167,13 @@ if __name__ == '__main__':
         val_dataloader = ModelNet40_h5(n_points=n_points, data_dir=args.data_dir, batch_size=batch_size, train=False, shuffle=False)
     step = 0
     best_acc = 0
-    # for k,v in state_dict.items():
-    #     print(k, v.shape)
     if args.pretrained_path:
         net.load(args.pretrained_path)
     if args.mode == "train":
         for epoch in range(args.epochs):
             lr_scheduler.step(len(train_dataloader) * batch_size)
-
             train(net, optimizer, epoch, train_dataloader, args)
             acc = evaluate(net, epoch, val_dataloader, args)
-
             best_acc = max(best_acc, acc)
             print(f'val acc={acc:.4f}, best={best_acc:.4f}')
     elif args.mode == "test":

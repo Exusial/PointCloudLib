@@ -3,9 +3,17 @@ import logging
 import yaml
 import jittor as jt
 from jittor import nn
-from misc.layerutils import create_convblock1d, create_convblock2d, create_grouper, create_act, CHANNEL_MAP, create_norm1d, create_linearblock
+from misc.layerutils import create_convblock1d, create_convblock2d, create_grouper, create_act, CHANNEL_MAP, create_linearblock
 from misc.sampler import FurthestPointSampler, RandomSampler
 from misc.upsampling import three_interpolation
+
+global_grad_saver = {}
+
+# Have a hook fn that saves into the global dict with a given name
+def get_hook(param_name):
+    def hook_fn(grad):
+        global_grad_saver[param_name] = grad
+    return hook_fn
 
 def get_reduction_fn(reduction):
     reduction = 'mean' if reduction.lower() == 'avg' else reduction
@@ -154,7 +162,6 @@ class SetAbstraction(nn.Module):
         else:
             if not self.all_aggr:
                 new_p, idx = self.sample_fn(p, p.shape[1] // self.stride) #.long()
-                jt.sync_all()
             else:
                 new_p = p
             """ DEBUG neighbor numbers. 
@@ -173,7 +180,9 @@ class SetAbstraction(nn.Module):
                 fi = None
             dp, fj = self.grouper(new_p, p, f)
             fj = get_aggregation_feautres(new_p, dp, fi, fj, feature_type=self.feature_type)
-            f = self.pool(self.convs(fj))
+            # fj.register_hook(lambda x: print("grad1: ", x.sum()))
+            f = jt.argmax(self.convs(fj), dim=-1)[1]
+            # f.register_hook(lambda x: print("grad2: ", x.sum()))
             if self.use_res:
                 f = self.act(f + identity)
             p = new_p
@@ -439,6 +448,7 @@ class PointNextEncoder(nn.Module):
         return nn.Sequential(*layers)
 
     def execute_cls_feat(self, p0, f0=None):
+        ret_list = []
         if hasattr(p0, 'keys'):
             p0, f0 = p0['pos'], p0.get('x', None)
         if f0 is None:
@@ -457,7 +467,7 @@ class PointNextEncoder(nn.Module):
             _p, _f = self.encoder[i]([p[-1], f[-1]])
             p.append(_p)
             f.append(_f)
-            jt.sync_all()
+            # print(_p.sum(), _f.sum())
         return p, f
 
     def execute(self, p0, f0=None):
@@ -543,7 +553,18 @@ class PointNextPartDecoder(nn.Module):
         self.aggr_args = kwargs.get('aggr_args', 
                                     {'feature_type': 'dp_fj', "reduction": 'max'}
                                     )  
-        if self.cls_map == 'pointnext':
+        if self.cls_map == 'curvenet':
+            # global features
+            self.global_conv2 = nn.Sequential(
+                create_convblock1d(fp_channels[-1] * 2, 128,
+                                   norm_args=None,
+                                   act_args=act_args))
+            self.global_conv1 = nn.Sequential(
+                create_convblock1d(fp_channels[-2] * 2, 64,
+                                   norm_args=None,
+                                   act_args=act_args))
+            skip_channels[0] += 64 + 128 + 16  # shape categories labels
+        elif self.cls_map == 'pointnext':
             self.global_conv2 = nn.Sequential(
                 create_convblock1d(fp_channels[-1] * 2, 128,
                                    norm_args=None,
@@ -634,7 +655,6 @@ class PointNextPartDecoder(nn.Module):
         # TODO: study where to add this ? 
         f[-len(self.decoder) - 1] = self.decoder[0][1:](
             [p[1], self.decoder[0][0]([p[1], jt.concat([cls_one_hot, f[1]], 1)], [p[2], f[2]])])[1]
-
         return f[-len(self.decoder) - 1]
 
 class PointNextCls(nn.Module):
@@ -685,7 +705,8 @@ class ClsHead(nn.Module):
                                             norm_args=norm_args,
                                             act_args=act_args))
             if dropout:
-                heads.append(nn.Dropout(dropout))
+                # heads.append(nn.Dropout(dropout))
+                heads.append(nn.Identity())
         heads.append(create_linearblock(mlps[-2], mlps[-1], act_args=None))
         self.head = nn.Sequential(*heads)
 
@@ -701,6 +722,76 @@ class ClsHead(nn.Module):
             end_points = jt.concat(global_feats, dim=1)
         logits = self.head(end_points)
         return logits
+
+class SegHead(nn.Module):
+    def __init__(self,
+                 num_classes, in_channels,
+                 mlps=None,
+                 norm_args={'norm': 'bn1d'},
+                 act_args={'act': 'relu'},
+                 dropout=0.5,
+                 global_feat=None, 
+                 **kwargs
+                 ):
+        super().__init__()
+        if kwargs:
+            logging.warning(f"kwargs: {kwargs} are not used in {__class__.__name__}")
+        if global_feat is not None:
+            self.global_feat = global_feat.split(',')
+            multiplier = len(self.global_feat) + 1
+        else:
+            self.global_feat = None
+            multiplier = 1
+        in_channels *= multiplier
+        
+        if mlps is None:
+            mlps = [in_channels, in_channels] + [num_classes]
+        else:
+            if not isinstance(mlps, List):
+                mlps = [mlps]
+            mlps = [in_channels] + mlps + [num_classes]
+        heads = []
+        for i in range(len(mlps) - 2):
+            heads.append(create_convblock1d(mlps[i], mlps[i + 1],
+                                            norm_args=norm_args,
+                                            act_args=act_args))
+            if dropout:
+                heads.append(nn.Dropout(dropout))
+
+        heads.append(create_convblock1d(mlps[-2], mlps[-1], act_args=None))
+        self.head = nn.Sequential(*heads)
+
+    def execute(self, end_points):
+        if self.global_feat is not None: 
+            global_feats = [] 
+            for feat_type in self.global_feat:
+                if 'max' in feat_type:
+                    global_feats.append(torch.max(end_points, dim=-1, keepdim=True)[0])
+                elif feat_type in ['avg', 'mean']:
+                    global_feats.append(torch.mean(end_points, dim=-1, keepdim=True))
+            global_feats = jt.concat(global_feats, dim=1).expand(-1, -1, end_points.shape[-1])
+            end_points = jt.concat((end_points, global_feats), dim=1)
+        logits = self.head(end_points)
+        return logits
+        
+class PointNextSeg(nn.Module):
+    def __init__(self,
+                 encoder=None,
+                 decoder=None,
+                 cls_args=None,
+                 **kwargs):
+        super().__init__()
+        self.encoder = encoder
+        self.decoder = decoder
+        self.head = SegHead(**cls_args)
+
+    def execute(self, data):
+        p, f = self.encoder.forward_seg_feat(data)
+        if self.decoder is not None:
+            f = self.decoder(p, f).squeeze(-1)
+        if self.head is not None:
+            f = self.head(f)
+        return f
 
 if __name__ == "__main__":
     import numpy as np

@@ -102,7 +102,6 @@ class ThreeNN(jt.Function):
     def grad(ctx, a=None, b=None):
         return None, None
 
-
 three_nn = ThreeNN.apply
 
 # borrowed from OpenPoints
@@ -226,7 +225,7 @@ class ThreeInterpolate(jt.Function):
         @alias(idx, in1)
         @alias(weights, in2)
         @alias(output, out0)
-        three_interpolate_grad_kernel_launcher_fast(grad_out_shape0, grad_out_shape1, output_shape2, grad_out_shape2, grad_out_p, idx_p, weights_p, output_p);
+        three_interpolate_grad_wrapper_fast(grad_out_shape0, grad_out_shape1, grad_out_shape2, output_shape2, grad_out_p, idx_p, weights_p, output_p);
         '''
 
     def execute(self, features, idx, weight):
@@ -255,7 +254,7 @@ class ThreeInterpolate(jt.Function):
             None:
             None:
         """
-        idx, weight, m = self.idx, self.weight,self.m
+        idx, weight, m = self.idx, self.weight, self.m
         B, c, n = grad_out.size()
         grad_features = jt.code([B,c,m],grad_out.dtype,[grad_out, idx, weight], cuda_header=self.cuda_header,cuda_src=self.backward_src)
         return grad_features, None, None

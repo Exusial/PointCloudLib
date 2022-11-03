@@ -167,7 +167,7 @@ class BallQueryGrouper(nn.Module):
         self.n_samples = n_samples
         self.use_xyz = use_xyz
 
-    def execute(self, new_xyz, pointset, feature):
+    def execute(self, new_xyz, pointset, feature, return_idx_only=False):
         '''
         Parameters
         ----------
@@ -204,7 +204,8 @@ class BallQueryGrouper(nn.Module):
             [new_xyz, pointset],
             cuda_src=cuda_src
         )
-
+        if return_idx_only:
+            return idxs
         pc_shape = [batch_size_x, n_input, self.n_samples, 3]
         new_pointset = pointset.reindex(pc_shape, [
             'i0',

@@ -7,7 +7,7 @@ import numpy as np
 # import jittor related 
 import jittor as jt 
 from jittor.dataset.dataset import Dataset
-
+os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
 
 def download_shapenetpart():
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -22,10 +22,13 @@ def download_shapenetpart():
         os.system('rm %s' % (zipfile))
 
 
-def load_data_partseg(partition):
-    download_shapenetpart()
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-    DATA_DIR = os.path.join(BASE_DIR, 'data')
+def load_data_partseg(partition, data_dir=None):
+    if data_dir is None:
+        download_shapenetpart()
+        BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+        DATA_DIR = os.path.join(BASE_DIR, 'data')
+    else:
+        DATA_DIR = data_dir
     all_data = []
     all_label = []
     all_seg = []
@@ -50,12 +53,12 @@ def load_data_partseg(partition):
 
 
 class ShapeNetPart(Dataset):
-    def __init__(self, num_points, partition='train', class_choice=None, batch_size=16, shuffle=False):
+    def __init__(self, num_points, partition='train', class_choice=None, batch_size=16, shuffle=False, data_dir=None):
         super().__init__()
         self.batch_size = batch_size
         self.shuffle = shuffle
 
-        self.data, self.label, self.seg = load_data_partseg(partition)
+        self.data, self.label, self.seg = load_data_partseg(partition, data_dir)
         self.cat2id = {'airplane': 0, 'bag': 1, 'cap': 2, 'car': 3, 'chair': 4, 
                        'earphone': 5, 'guitar': 6, 'knife': 7, 'lamp': 8, 'laptop': 9, 
                        'motor': 10, 'mug': 11, 'pistol': 12, 'rocket': 13, 'skateboard': 14, 'table': 15}

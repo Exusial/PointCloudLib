@@ -81,7 +81,7 @@ class LayerNorm2d(nn.LayerNorm):
 
     def execute(self, x):
         return nn.layer_norm(
-            x.permute(0, 2, 3, 1), self.normalized_shape, self.weight, self.bias, self.eps).permute(0, 3, 1, 2).contiguous()
+            x.permute(0, 2, 3, 1), self.normalized_shape, self.weight, self.bias, self.eps).permute(0, 3, 1, 2)
 
 
 class LayerNorm1d(nn.LayerNorm):
@@ -92,7 +92,7 @@ class LayerNorm1d(nn.LayerNorm):
 
     def execute(self, x):
         return nn.layer_norm(
-            x.permute(0, 2, 1), self.normalized_shape, self.weight, self.bias, self.eps).permute(0, 2, 1).contiguous()
+            x.permute(0, 2, 1), self.normalized_shape, self.weight, self.bias, self.eps).permute(0, 2, 1)
 
 
 class FastBatchNorm1d(nn.Module):
@@ -184,6 +184,7 @@ def create_convblock2d(*args,
         norm_layer = create_norm(norm_args, out_channels, dimension='2d')
         bias = False if norm_layer is not None else bias
         conv_layer = [Conv2d(*args, bias=bias, **kwargs)]
+        # conv_layer = [nn.Conv2d(*args, kernel_size=(1, 1), bias=bias, **kwargs)]
         if norm_layer is not None:
             conv_layer.append(norm_layer)
         act_layer = create_act(act_args)
@@ -199,7 +200,6 @@ def create_convblock2d(*args,
         if act_args is not None:
             conv_layer.append(act_layer)
         conv_layer.append(Conv2d(*args, bias=bias, **kwargs))
-
     elif order == 'conv-act-norm':
         norm_layer = create_norm(norm_args, out_channels, dimension='2d')
         bias = False if norm_layer is not None else bias
@@ -265,7 +265,6 @@ def create_grouper(group_args):
     if nsample is not None:
         if method == 'ballquery':
             grouper = QueryAndGroup(radius, nsample, **group_args_copy)
-            # grouper = QueryAndGroup(radius, nsample, **group_args_copy)
         elif method == 'knn':
             grouper = knn(nsample,  **group_args_copy)
             grouper = KNNGroup(nsample,  **group_args_copy)

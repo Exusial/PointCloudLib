@@ -40,9 +40,11 @@ class QueryAndGroup(nn.Module):
         :return:
             new_features: (B, 3 + C, npoint, nsample)
         """
+
         if features is not None:
-            features = features.permute(0,2,1)
-        new_features, idx = self.query(query_xyz, support_xyz, features)
+            B, C, N = features.shape
+            # features = features.permute(0,2,1)
+        idx = self.query(query_xyz, support_xyz, None, True)
 
         if self.return_only_idx:
             return idx
@@ -53,8 +55,9 @@ class QueryAndGroup(nn.Module):
         if self.relative_xyz:
             grouped_xyz = grouped_xyz - query_xyz.transpose(1, 2).unsqueeze(-1)  # relative position
             if self.normalize_dp:
-                grouped_xyz /= self.radius       
-        return grouped_xyz, new_features.permute(0,3,1,2)
+                grouped_xyz /= self.radius      
+        new_features = features.reindex([B, C, query_xyz.shape[1], self.nsample], ['i0', 'i1', '@e0(i0, i2, i3)'], extras=[idx])
+        return grouped_xyz, new_features
 
 class GroupAll_Trans(nn.Module):
     def __init__(self, use_xyz):
@@ -66,4 +69,4 @@ class GroupAll_Trans(nn.Module):
             new_feature = jt.concat([pointset.permute(0,2,1), feature], dim=-1)
         else:
             new_feature = feature
-        return new_xyz.permute(0,2,1).unsqueeze(2), new_feature.unsqueeze(2)
+        return pointset.transpose(1, 2).unsqueeze(2), new_feature.unsqueeze(2)

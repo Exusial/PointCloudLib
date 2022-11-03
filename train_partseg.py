@@ -3,20 +3,23 @@
 import os
 import sys 
 from data_utils.shapenet_loader import ShapeNetPart
+from data_utils.shapenet_txt_loader import ShapeNetPartNormal
 import numpy as np
 import sklearn.metrics as metrics
 from misc.utils import LRScheduler
+from misc.transform import get_transform
 from networks.seg.pointnet_partseg import PointNet_partseg
 from networks.seg.pointnet2_partseg import PointNet2_partseg
 from networks.seg.pointconv_partseg import PointConvDensity_partseg
 from networks.seg.dgcnn_partseg import DGCNN_partseg
 from networks.seg.pointcnn_partseg import PointCNN_partseg
-
+from networks.cls.pointnext import PointNextEncoder
+from networks.seg.pointnext import PointNextPartDecoder, PointNextPartSeg
 import time 
-
+import yaml
 # jittor related 
 import jittor as jt 
-from jittor import nn 
+from jittor import nn, optim
 
 import argparse
 
@@ -64,16 +67,24 @@ def calculate_shape_IoU(pred_np, seg_np, label, class_choice):
 
 
 def train(model, args):
-    batch_size = 16
-    train_loader = ShapeNetPart(partition='trainval', num_points=2048, class_choice=None, batch_size=batch_size, shuffle=True)
-    test_loader = ShapeNetPart(partition='test', num_points=2048, class_choice=None, batch_size=batch_size, shuffle=False)
-    
+    batch_size = args.batch_size
+    if args.dataset_type == "ShapenetPart":
+        train_loader = ShapeNetPart(partition='trainval', num_points=2048, class_choice=None, batch_size=batch_size, shuffle=True)
+        test_loader = ShapeNetPart(partition='test', num_points=2048, class_choice=None, batch_size=batch_size, shuffle=False)
+    elif args.dataset_type == "ShapenetPart-txt":
+        train_loader = ShapeNetPartNormal(split='trainval', num_points=args.num_points, data_root=args.data_dir, batch_size=batch_size, shuffle=True, presample=False, transform=args.train_transform)
+        test_loader = ShapeNetPartNormal(split='test', num_points=args.num_points, data_root=args.data_dir, batch_size=batch_size, shuffle=False, presample=True, transform=args.val_transform)
+
     seg_num_all = 50
     seg_start_index = 0
-
-    print(str(model))
+    # print(str(model))
     base_lr = 0.01
-    optimizer = nn.SGD(model.parameters(), lr=base_lr, momentum=0.9, weight_decay=1e-4)
+    if args.optimizer == "sgd":
+        optimizer = nn.SGD(model.parameters(), lr=base_lr, momentum=0.9, weight_decay=1e-4)
+    elif args.optimizer == "adam":
+        optimizer = optim.Adam(model.parameters(), lr=base_lr, weight_decay=args.weight_decay)
+    elif args.optimizer == "adamw":
+        optimizer = optim.AdamW(model.parameters(), lr=base_lr, weight_decay=args.weight_decay)
     lr_scheduler = LRScheduler(optimizer, base_lr)
 
     # criterion = nn.cross_entropy_loss() # here
@@ -108,6 +119,9 @@ def train(model, args):
             batch_size = data.size()[0]
             if args.model == 'pointnet2':
                 seg_pred = model(data, data, label_one_hot)
+            elif args.model == "pointnext":
+                pos = data[...,:3].clone()
+                seg_pred = model(pos, data.permute(0,2,1), label)
             else :
                 seg_pred = model(data, label_one_hot)
             seg_pred = seg_pred.permute(0, 2, 1)
@@ -115,8 +129,9 @@ def train(model, args):
             # print (seg_pred.size(), seg.size())
             loss = nn.cross_entropy_loss(seg_pred.view(-1, seg_num_all), seg.view(-1))
             # print (loss.data)
+            jt.sync_all()
             optimizer.step(loss)
-
+            jt.sync_all()
             pred = jt.argmax(seg_pred, dim=2)[0]               # (batch_size, num_points)
             # print ('pred size =', pred.size(), seg.size())
             count += batch_size
@@ -180,6 +195,9 @@ def train(model, args):
             batch_size = data.size()[0]
             if args.model == 'pointnet2':
                 seg_pred = model(data, data, label_one_hot)
+            elif args.model == "pointnext":
+                pos = data[...,:3].clone()
+                seg_pred = model(pos, data.permute(0,2,1), label)
             else :
                 seg_pred = model(data, label_one_hot)
             seg_pred = seg_pred.permute(0, 2, 1)
@@ -215,16 +233,93 @@ def train(model, args):
         #     best_test_iou = np.mean(test_ious)
         #     torch.save(model.state_dict(), 'checkpoints/%s/models/model.t7' % args.exp_name)
 
+def validate(model, args):
+    batch_size = args.batch_size
+    test_loader = ShapeNetPartNormal(split='test', num_points=args.num_points, data_root=args.data_dir, presample=True, transform=args.val_transform).set_attrs(batch_size=batch_size, shuffle=False)
 
+    seg_num_all = 50
+    seg_start_index = 0
+
+    # print(str(model))
+    # start test
+    test_loss = 0.0
+    count = 0.0
+    model.eval()
+    test_true_cls = []
+    test_pred_cls = []
+    test_true_seg = []
+    test_pred_seg = []
+    test_label_seg = []
+    vote_transforms = None
+    if args.num_votes > 0:
+        vote_transforms = get_transform('PointCloudScaling')
+    for data, label, seg in test_loader:
+        seg = seg - seg_start_index
+        label_one_hot = np.zeros((label.shape[0], 16))
+        # debug input
+        # print(data[:,:3].sum(-1))
+        # print(data.sum(-1))
+        # print(label)
+        # print(seg)
+        # exit(0)
+        for idx in range(label.shape[0]):
+            label_one_hot[idx, label.numpy()[idx,0]] = 1
+        label_one_hot = jt.array(label_one_hot.astype(np.float32))
+        if args.model == 'pointnet' or args.model == 'dgcnn':            
+            data = data.permute(0, 2, 1) # for pointnet it should not be committed 
+        batch_size = data.size()[0]
+        seg_pred = jt.zeros((batch_size, seg_num_all, seg.shape[-1]))
+        for v in range(args.num_votes + 1):
+            jt.set_global_seed(v)
+            if args.model == 'pointnet2':
+                seg_pred += model(data, data, label_one_hot)
+            elif args.model == "pointnext":
+                # data = jt.array(np.load("../PointNeXt/x.npy")).permute(0,2,1)
+                # label = jt.array(np.load("../PointNeXt/cls.npy"))
+                # for name, m in model.named_parameters():
+                #     print(name, m.sum())
+                pos = data[...,:3].clone()
+                if vote_transforms is not None:
+                    pos = vote_transforms(pos)
+                seg_pred += model(pos, data.permute(0,2,1), label)
+            else :
+                seg_pred += model(data, label_one_hot)
+        seg_pred = seg_pred.permute(0, 2, 1) / (args.num_votes + 1)
+        loss = nn.cross_entropy_loss(seg_pred.view(-1, seg_num_all), seg.view(-1,1).squeeze(-1))
+        pred = jt.argmax(seg_pred, dim=2)[0]
+        count += batch_size
+        test_loss += loss.numpy() * batch_size
+        seg_np = seg.numpy()
+        pred_np = pred.numpy()
+        label = label.numpy() # added 
+        test_true_cls.append(seg_np.reshape(-1))
+        test_pred_cls.append(pred_np.reshape(-1))
+        test_true_seg.append(seg_np)
+        test_pred_seg.append(pred_np)
+        test_label_seg.append(label.reshape(-1, 1))
+    test_true_cls = np.concatenate(test_true_cls)
+    test_pred_cls = np.concatenate(test_pred_cls)
+    test_acc = metrics.accuracy_score(test_true_cls, test_pred_cls)
+    avg_per_class_acc = metrics.balanced_accuracy_score(test_true_cls, test_pred_cls)
+    test_true_seg = np.concatenate(test_true_seg, axis=0)
+    test_pred_seg = np.concatenate(test_pred_seg, axis=0)
+    test_label_seg = np.concatenate(test_label_seg)
+    test_ious = calculate_shape_IoU(test_pred_seg, test_true_seg, test_label_seg, None)
+    outstr = 'loss: %.6f, test acc: %.6f, test avg acc: %.6f, test iou: %.6f' % (test_loss*1.0/count,
+                                                                                            test_acc,
+                                                                                            avg_per_class_acc,
+                                                                                            np.mean(test_ious))
+    print (outstr)
 
 if __name__ == "__main__":
     # Training settings    
     parser = argparse.ArgumentParser(description='Point Cloud Recognition')
     parser.add_argument('--model', type=str, default='[pointnet]', metavar='N',
-                        choices=['pointnet', 'pointnet2', 'pointcnn', 'dgcnn', 'pointconv'],
+                        choices=['pointnet', 'pointnet2', 'pointcnn', 'dgcnn', 'pointconv', 'pointnext'],
                         help='Model to use')
     parser.add_argument('--batch_size', type=int, default=32, metavar='batch_size',
                         help='Size of batch)')
+    parser.add_argument('--optimizer', type=str, default='adam')
     parser.add_argument('--lr', type=float, default=0.02, metavar='LR',
                         help='learning rate (default: 0.02)')    
     parser.add_argument('--momentum', type=float, default=0.9, metavar='M',
@@ -233,9 +328,21 @@ if __name__ == "__main__":
                         help='num of points to use')
     parser.add_argument('--epochs', type=int, default=300, metavar='N',
                         help='number of episode to train ')
-
+    parser.add_argument('--configs', type=str, default=None)
+    parser.add_argument('--data_dir', type=str, default=None,
+                        help='path to the data dir')
+    parser.add_argument('--weight_decay', type=float, default=0.05,
+                        help='l2 norm to the loss')
+    parser.add_argument('--mode', type=str, default='train',
+                    help='mode of running models')
+    parser.add_argument('--pretrained_path', type=str, default=None,
+                        help='path to the pretrained parameters of models')
+    parser.add_argument('--dataset_type', type=str, default='ShapenetPart',
+                        choices=['ShapenetPart', 'ShapenetPart-txt'])
+    parser.add_argument('--train_transform', type=str, nargs='+', default=None)
+    parser.add_argument('--val_transform', type=str, nargs='+', default=None)
+    parser.add_argument('--num_votes', type=int, default=0)
     args = parser.parse_args()
-
 
     if args.model == 'pointnet':
         model = PointNet_partseg(part_num=50)
@@ -247,7 +354,23 @@ if __name__ == "__main__":
         model = DGCNN_partseg(part_num=50)
     elif args.model == 'pointconv':
         model = PointConvDensity_partseg(part_num=50)
+    elif args.model == 'pointnext':
+        kw = {}
+        pre_kw = {}
+        if args.configs:
+            f = open(args.configs)
+            config_file = yaml.safe_load(f)
+            kw = config_file['model']['encoder_args']
+            dkw = config_file['model']['decoder_args']
+            pre_kw = config_file['model']['cls_args']
+        encoder = PointNextEncoder(**kw)
+        decoder = PointNextPartDecoder(encoder_channel_list=encoder.channel_list, **dkw)
+        model = PointNextPartSeg(encoder, decoder, cls_args=pre_kw)
     else:
         raise Exception("Not implemented")
-
-    train(model, args)
+    if args.pretrained_path:
+        model.load(args.pretrained_path)
+    if args.mode == "train":
+        train(model, args)
+    else:
+        validate(model, args)

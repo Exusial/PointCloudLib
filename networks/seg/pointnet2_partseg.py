@@ -6,7 +6,7 @@ from jittor import init
 from jittor.contrib import concat 
 
 
-from misc.ops import FurthestPointSampler
+from misc.sampler import FurthestPointSampler
 from misc.ops import BallQueryGrouper
 from misc.ops import GroupAll
 from misc.ops import PointNetFeaturePropagation

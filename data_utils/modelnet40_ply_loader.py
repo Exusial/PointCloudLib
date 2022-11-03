@@ -110,6 +110,8 @@ class ModelNet40_h5(Dataset):
                 os.getcwd(), data_dir) if data_dir.startswith('.') else data_dir
         else:
             data_dir = os.path.join(BASE_DIR, "ModelNet40Ply2048")
+        self.batch_size = batch_size
+        self.shuffle = shuffle
         self.partition = 'train' if train else 'test'  # val = test
         self.data, self.label = load_data(data_dir, self.partition, self.url)
         self.n_points = n_points
@@ -124,7 +126,6 @@ class ModelNet40_h5(Dataset):
     def __getitem__(self, item):
         pointcloud = self.data[item][:self.n_points]
         label = self.label[item]
-
         if self.partition == 'train':
             np.random.shuffle(pointcloud)
         data = {'pos': pointcloud,
