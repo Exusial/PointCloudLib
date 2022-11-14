@@ -60,11 +60,11 @@ def train(net, optimizer, epoch, dataloader, args):
             output = net(pts)
         loss = soft_cross_entropy_loss(output, labels)
         # pass 1: norm loss
-        # optimizer.backward(loss)
-        # optimizer.clip_grad_norm(1.)
-        # optimizer.step()
+        optimizer.backward(loss)
+        optimizer.clip_grad_norm(1.)
+        optimizer.step()
         # pass 2: no norm
-        optimizer.step(loss) 
+        # optimizer.step(loss) 
         pred = np.argmax(output.data, axis=1)
         acc = np.mean(pred == labels.data) * 100
         pbar.set_description(f'Epoch {epoch} [TRAIN] loss = {loss.data[0]:.2f}, acc = {acc:.2f}')
